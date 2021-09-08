@@ -69,6 +69,12 @@ Generate session credentials with defined profile and non-default credential fil
 aws-mfa-session --credentials-file .aws/credentials2 --profile dev --update-profile mfa-session --code 123456
 ```
 
+Assume a role, generate the MFA token:
+
+```sh
+aws-mfa-session --profile prod --update-profile default --arn arn:aws:iam::***:mfa/***  --secret *MFA_SECRET* --region us-east-1 --rolearn arn:aws:iam::***:role/***
+```
+
 ## How to build and install
 
 Requirements: rust and cargo
@@ -81,7 +87,7 @@ cargo build --release
 cargo install
 
 # Install latest from git
-cargo install --git https://github.com/AnderEnder/aws-mfa-session
+cargo install --git https://github.com/crafty0coder/aws-mfa-session
 
 # Install from crate package
 cargo install aws-mfa-session

@@ -2,15 +2,18 @@ mod credentials;
 mod error;
 mod shell;
 
+use anyhow::Context;
+use anyhow::Result;
 use credentials::*;
 use error::CliError;
 use shell::Shell;
+use google_authenticator::GoogleAuthenticator;
 
 use rusoto_core::request::HttpClient;
 use rusoto_core::{Client, Region};
 use rusoto_credential::ProfileProvider;
 use rusoto_iam::{GetUserRequest, Iam, IamClient, ListMFADevicesRequest, ListMFADevicesResponse};
-use rusoto_sts::{GetCallerIdentityRequest, GetSessionTokenRequest, Sts, StsClient};
+use rusoto_sts::{AssumeRoleRequest, GetCallerIdentityRequest, GetSessionTokenRequest, Sts, StsClient, Credentials};
 use std::collections::HashMap;
 use std::env;
 use std::process::Command;
@@ -43,10 +46,16 @@ pub struct Args {
     region: Option<Region>,
     /// MFA code from MFA resource
     #[structopt(long = "code", short = "c")]
-    code: String,
+    code: Option<String>,
+    /// MFA secret
+    #[structopt(long = "secret")]
+    secret: Option<String>,    
     /// MFA device ARN from user profile. It could be detected automatically
     #[structopt(long = "arn", short = "a")]
     arn: Option<String>,
+    /// Role ARN to assume
+    #[structopt(long = "rolearn")]
+    rolearn: Option<String>,
     /// Run shell with AWS credentials as environment variables
     #[structopt(short = "s")]
     shell: bool,
@@ -98,19 +107,63 @@ pub async fn run(opts: Args) -> Result<(), CliError> {
         other => other,
     };
 
+    let mfa_secret = match opts.secret {
+        None => {
+            if opts.code == None {
+                panic!("MFA secret or code is required.");
+            }
+            Some("".to_owned())
+        }
+        other => other,
+    };
+
+    let token_code = match opts.code {
+        None => {
+            let auth = GoogleAuthenticator::new();
+            let tcode = auth.get_code(&mfa_secret.unwrap(),0).unwrap();
+            Some(tcode.to_owned())
+        }
+        other => other,
+    };
+
     // get sts credentials
     let sts_client = StsClient::new_with_client(client, region.clone());
     let sts_request = GetSessionTokenRequest {
-        duration_seconds: None,
-        serial_number,
-        token_code: Some(opts.code),
+        duration_seconds: Some(60*60*1),
+        serial_number: serial_number.clone(),
+        token_code: token_code.clone(),
     };
 
-    let credentials = sts_client
-        .get_session_token(sts_request)
-        .await?
-        .credentials
-        .ok_or(CliError::NoCredentials)?;
+    let credentials:Credentials = if let Some(role_arn) = opts.rolearn {
+        let sts_role = AssumeRoleRequest {
+            duration_seconds: Some(60*60*1),
+            role_arn: role_arn.to_owned(),
+            role_session_name: "dummy".to_owned(),
+            serial_number: serial_number.clone(),
+            token_code: token_code.clone(),
+            ..Default::default()
+        };
+        let assume_role_res = sts_client
+            .assume_role(sts_role)
+            .await
+            .context("Failed assuming role");
+        
+        let credentials = assume_role_res
+            .unwrap()
+            .credentials
+            .ok_or(CliError::NoCredentials)?;
+        credentials
+    } else {
+
+        let credentials = sts_client
+            .get_session_token(sts_request)
+            .await?
+            .credentials
+            .ok_or(CliError::NoCredentials)?;
+        credentials
+    };
+
+    // dbg!(credentials.clone());
 
     let identity = sts_client
         .get_caller_identity(GetCallerIdentityRequest {})
